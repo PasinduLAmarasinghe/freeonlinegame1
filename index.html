@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Flappy-like Game — Single File</title>
+  <style>
+    :root{--bg:#70c5ce;--pipe:#2aa04f;--ui:#ffffff}
+    html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,-apple-system; background:var(--bg);}
+    #game-container{display:flex;align-items:center;justify-content:center;height:100%;padding:20px;box-sizing:border-box}
+    canvas{background:transparent;display:block;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.25)}
+    .hud{position:fixed;top:18px;left:18px;color:var(--ui);font-weight:700;text-shadow:0 2px 6px rgba(0,0,0,0.35)}
+    .controls{position:fixed;right:18px;top:18px;display:flex;gap:8px}
+    button{background:rgba(255,255,255,0.9);border:0;padding:8px 12px;border-radius:8px;font-weight:600;cursor:pointer}
+    button:active{transform:translateY(1px)}
+    .hint{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);color:#fff;font-weight:600;text-shadow:0 2px 6px rgba(0,0,0,0.35)}
+    .credits{position:fixed;right:18px;bottom:18px;color:rgba(255,255,255,0.9);font-size:13px}
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game" width="480" height="640"></canvas>
+  </div>
+
+  <div class="hud" id="score">Score: 0</div>
+  <div class="controls">
+    <button id="btnStart">Start</button>
+    <button id="btnMute">Mute</button>
+    <button id="btnFullscreen">Fullscreen</button>
+  </div>
+  <div class="hint" id="hint">Click / Tap / Space to flap</div>
+  <div class="credits">Made By Pasindu Lakshan</div>
+
+  <script>
+  /**
+   * Single-file Flappy-like game (HTML/CSS/JS)
+   * Instructions:
+   * 1. Save this file as index.html.
+   * 2. Create a folder named `assets` (or change the paths below).
+   * 3. Put your images/music in the assets folder and name them (or change paths):
+   *    - bird image: assets/bird.png  (recommended: single image, transparent background)
+   *    - background: assets/background.jpg  (optional)
+   *    - pipeTop / pipeBottom images (optional) or game will draw colored pipes
+   *    - music: assets/music.mp3
+   *    - flap sound: assets/flap.wav
+   *    - hit sound: assets/hit.wav
+   * 4. Open index.html in a modern browser.
+   * Notes: The game scales to the canvas size. Uses localStorage for high score.
+   */
+
+  const ASSETS = {
+    bird: 'assets/bird.png',
+    background: 'assets/background.jpg',
+    pipeTop: 'assets/pipe_top.png', // optional
+    pipeBottom: 'assets/pipe_bottom.png', // optional
+    music: 'assets/music.mp3',
+    flap: 'assets/flap.wav',
+    hit: 'assets/hit.wav'
+  };
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const hintEl = document.getElementById('hint');
+  const btnStart = document.getElementById('btnStart');
+  const btnMute = document.getElementById('btnMute');
+  const btnFs = document.getElementById('btnFullscreen');
+
+  let W = canvas.width, H = canvas.height;
+  // Game state
+  let birdImg = new Image();
+  let bgImg = new Image();
+  let pipeTopImg = new Image();
+  let pipeBottomImg = new Image();
+  let music = null, flapSound = null, hitSound = null;
+  let assetsLoaded = 0, assetsToLoad = 0;
+
+  // Gameplay parameters
+  const gravity = 0.6;
+  const flapStrength = -10.5;
+  const pipeWidth = 80;
+  const pipeGap = 160;
+  const pipeSpacing = 220; // distance between consecutive pipes
+
+  // Player
+  const player = {
+    x: 100,
+    y: H/2,
+    vy: 0,
+    w: 48,
+    h: 34,
+    rotation: 0
+  };
+
+  let pipes = [];
+  let tick = 0;
+  let score = 0;
+  let highScore = parseInt(localStorage.getItem('flappy_high')||'0',10);
+  let playing = false;
+  let muted = false;
+  let musicAllowed = false; // browsers require user gesture to play audio
+
+  // Resize handler: keep canvas aspect ratio while fitting available space
+  function fitCanvas(){
+    const container = document.getElementById('game-container');
+    const maxW = Math.min(window.innerWidth-40, 480);
+    const maxH = Math.min(window.innerHeight-80, 800);
+    const ratio = canvas.width / canvas.height;
+    let newW = maxW, newH = Math.round(newW / ratio);
+    if(newH > maxH){ newH = maxH; newW = Math.round(newH * ratio); }
+    canvas.style.width = newW + 'px';
+    canvas.style.height = newH + 'px';
+  }
+  window.addEventListener('resize', fitCanvas);
+  fitCanvas();
+
+  // Asset loader helper (non-blocking)
+  function tryLoadAssets(){
+    const toTry = [
+      {img: birdImg, src: ASSETS.bird},
+      {img: bgImg, src: ASSETS.background},
+      {img: pipeTopImg, src: ASSETS.pipeTop},
+      {img: pipeBottomImg, src: ASSETS.pipeBottom}
+    ];
+
+    assetsToLoad = toTry.length + 3; // images + 3 audio files
+
+    toTry.forEach(obj => {
+      obj.img.onload = () => { assetsLoaded++; };
+      obj.img.onerror = () => { assetsLoaded++; /* treat missing images as okay */ };
+      obj.img.src = obj.src;
+    });
+
+    // audio
+    try{ music = new Audio(ASSETS.music); music.loop = true; music.oncanplay = ()=>assetsLoaded++; music.onerror = ()=>assetsLoaded++; }
+    catch(e){ assetsLoaded++; }
+    try{ flapSound = new Audio(ASSETS.flap); flapSound.oncanplay = ()=>assetsLoaded++; flapSound.onerror = ()=>assetsLoaded++; }
+    catch(e){ assetsLoaded++; }
+    try{ hitSound = new Audio(ASSETS.hit); hitSound.oncanplay = ()=>assetsLoaded++; hitSound.onerror = ()=>assetsLoaded++; }
+    catch(e){ assetsLoaded++; }
+  }
+  tryLoadAssets();
+
+  function resetGame(){
+    player.y = H/2; player.vy = 0; player.rotation = 0;
+    pipes = [];
+    tick = 0;
+    score = 0;
+    playing = false;
+    hintEl.style.display = 'block';
+    scoreEl.textContent = `Score: 0 • Best: ${highScore}`;
+  }
+
+  function spawnPipe(x){
+    const minTop = 60;
+    const maxTop = H - pipeGap - 60;
+    const top = Math.floor(Math.random()*(maxTop-minTop+1))+minTop;
+    pipes.push({x, top});
+  }
+
+  function startGame(){
+    if(!musicAllowed && music && !muted){ music.play().catch(()=>{}); music.pause(); }
+    resetGame();
+    // create initial pipes
+    for(let i=0;i<3;i++) spawnPipe(W + i*pipeSpacing);
+    playing = true;
+    hintEl.style.display = 'none';
+  }
+
+  function flap(){
+    if(!playing) startGame();
+    player.vy = flapStrength;
+    if(flapSound && !muted){ try{ flapSound.currentTime = 0; flapSound.play(); }catch(e){} }
+  }
+
+  function update(){
+    // wait for assets to load a bit
+    tick++;
+    if(playing){
+      player.vy += gravity;
+      player.y += player.vy;
+      player.rotation = Math.max(-0.6, Math.min(1.2, player.vy/12));
+
+      // move pipes
+      for(let p of pipes){ p.x -= 2.6 + Math.min(3, score/20); }
+      // spawn new pipe
+      if(pipes.length && pipes[pipes.length-1].x < W - pipeSpacing) spawnPipe(W + 40);
+      // remove old
+      if(pipes.length && pipes[0].x < -pipeWidth-40) pipes.shift();
+
+      // scoring: when the pipe passes player.x + small margin
+      for(let p of pipes){
+        if(!p.passed && p.x + pipeWidth < player.x){ p.passed = true; score++; if(score>highScore){ highScore = score; localStorage.setItem('flappy_high', highScore); } }
+      }
+
+      // collision with ground or ceiling
+      if(player.y + player.h/2 >= H || player.y - player.h/2 <= 0){
+        gameOver();
+      }
+      // collision with pipes
+      for(let p of pipes){
+        const pipeTopY = p.top;
+        const pipeBottomY = p.top + pipeGap;
+        const birdRect = {left:player.x - player.w/2, right:player.x + player.w/2, top:player.y - player.h/2, bottom:player.y + player.h/2};
+        const pipeRectTop = {left:p.x, right:p.x+pipeWidth, top:0, bottom:pipeTopY};
+        const pipeRectBottom = {left:p.x, right:p.x+pipeWidth, top:pipeBottomY, bottom:H};
+        if(rectIntersect(birdRect, pipeRectTop) || rectIntersect(birdRect, pipeRectBottom)){
+          gameOver();
+        }
+      }
+    }
+
+    // update HUD
+    scoreEl.textContent = `Score: ${score} • Best: ${highScore}`;
+  }
+
+  function rectIntersect(a,b){
+    return !(b.left > a.right || b.right < a.left || b.top > a.bottom || b.bottom < a.top);
+  }
+
+  function gameOver(){
+    playing = false;
+    if(hitSound && !muted){ try{ hitSound.currentTime = 0; hitSound.play(); }catch(e){} }
+    hintEl.style.display = 'block';
+  }
+
+  function draw(){
+    // clear
+    ctx.clearRect(0,0,W,H);
+
+    // background image or plain color
+    if(bgImg && bgImg.complete && bgImg.naturalWidth){
+      // draw tiled background to cover canvas width
+      const patternH = bgImg.height * (W/bgImg.width);
+      ctx.drawImage(bgImg,0,0,W, H);
+    } else {
+      // fallback: gradient
+      const g = ctx.createLinearGradient(0,0,0,H);
+      g.addColorStop(0,'#70c5ce'); g.addColorStop(1,'#58b0c0');
+      ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    }
+
+    // pipes
+    for(let p of pipes){
+      if(pipeTopImg && pipeTopImg.complete && pipeTopImg.naturalWidth){
+        // draw pipe images if available
+        ctx.drawImage(pipeTopImg, p.x, 0, pipeWidth, p.top);
+        ctx.drawImage(pipeBottomImg, p.x, p.top+pipeGap, pipeWidth, H - (p.top+pipeGap));
+      } else {
+        // fallback: draw rectangle pipes
+        ctx.fillStyle = 'rgba(42,160,79,0.95)';
+        ctx.fillRect(p.x, 0, pipeWidth, p.top);
+        ctx.fillRect(p.x, p.top+pipeGap, pipeWidth, H - (p.top+pipeGap));
+        // add a little rim
+        ctx.fillStyle = 'rgba(0,0,0,0.08)';
+        ctx.fillRect(p.x+pipeWidth-10, 0, 6, p.top);
+        ctx.fillRect(p.x+pipeWidth-10, p.top+pipeGap, 6, H - (p.top+pipeGap));
+      }
+    }
+
+    // draw bird (with rotation)
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.rotate(player.rotation);
+    if(birdImg && birdImg.complete && birdImg.naturalWidth){
+      const bw = player.w; const bh = player.h;
+      ctx.drawImage(birdImg, -bw/2, -bh/2, bw, bh);
+    } else {
+      // fallback: simple circle
+      ctx.fillStyle = '#ffdd57'; ctx.beginPath(); ctx.ellipse(0,0,player.w/2,player.h/2,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#000'; ctx.fillRect(6, -6, 6, 6);
+    }
+    ctx.restore();
+
+    // overlay UI (score is in HUD)
+    if(!playing){
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(W/2 - 140, H/2 - 60, 280, 120);
+      ctx.fillStyle = '#fff'; ctx.font = '22px system-ui'; ctx.textAlign='center';
+      ctx.fillText('Click / Space / Tap to play', W/2, H/2 - 10);
+      ctx.fillText('Your score: ' + score + '  Best: ' + highScore, W/2, H/2 + 28);
+    }
+  }
+
+  function loop(){
+    update();
+    draw();
+    window.requestAnimationFrame(loop);
+  }
+
+  // controls
+  window.addEventListener('keydown', (e)=>{
+    if(e.code === 'Space'){ e.preventDefault(); flap(); }
+    if(e.code === 'KeyM'){ toggleMute(); }
+  });
+  canvas.addEventListener('click', ()=>{ flap(); if(music && !musicAllowed){ musicAllowed = true; if(!muted) try{ music.play(); }catch(e){} } });
+  canvas.addEventListener('touchstart', (e)=>{ e.preventDefault(); flap(); if(music && !musicAllowed){ musicAllowed = true; if(!muted) try{ music.play(); }catch(e){} } }, {passive:false});
+
+  btnStart.addEventListener('click', ()=>{ startGame(); if(music && !musicAllowed){ musicAllowed = true; if(!muted) try{ music.play(); }catch(e){} } });
+  btnMute.addEventListener('click', toggleMute);
+  btnFs.addEventListener('click', ()=>{ if(document.fullscreenElement){ document.exitFullscreen(); } else { document.documentElement.requestFullscreen(); } });
+
+  function toggleMute(){ muted = !muted; if(music){ try{ music[muted? 'pause':'play'](); }catch(e){} } btnMute.textContent = muted ? 'Unmute' : 'Mute'; }
+
+  // set logical canvas size (keeps physics consistent)
+  function initCanvasSize(){ W = canvas.width = 480; H = canvas.height = 640; player.h = 34; player.w = 48; }
+  initCanvasSize();
+
+  // small utility to wait a short while for assets but not block game start
+  setTimeout(()=>{ loop(); }, 120);
+
+  // start with a reset
+  resetGame();
+
+  // expose a tiny API for quick edits in console
+  window.__flappy = {startGame, resetGame, spawnPipe, ASSETS, toggleMute};
+  </script>
+</body>
+</html>
